@@ -63,7 +63,13 @@ gcloud projects add-iam-policy-binding ${PROJECT_NAME} --member serviceAccount:$
 gcloud projects add-iam-policy-binding ${PROJECT_NAME} --member serviceAccount:${SERVICE_ACCOUNT}@${PROJECT_NAME}.iam.gserviceaccount.com --role "roles/resourcemanager.projectIamAdmin"
 #│ need the below for the SA account creations Error creating service account: googleapi: Error 403: Permission iam.serviceAccounts.create is required to perform this operation on project projects/demox-4567999., forbidden
 gcloud projects add-iam-policy-binding ${PROJECT_NAME} --member serviceAccount:${SERVICE_ACCOUNT}@${PROJECT_NAME}.iam.gserviceaccount.com --role "roles/iam.serviceAccountAdmin"
+
+# required to access bucket i.e. terraform show etc
 gcloud projects add-iam-policy-binding ${PROJECT_NAME} --member serviceAccount:${SERVICE_ACCOUNT}@${PROJECT_NAME}.iam.gserviceaccount.com --role "roles/storage.objectViewer"
+
+# required for pub-sub
+# https://github.com/terraform-google-modules/terraform-google-pubsub#requirements
+gcloud projects add-iam-policy-binding ${PROJECT_NAME} --member serviceAccount:${SERVICE_ACCOUNT}@${PROJECT_NAME}.iam.gserviceaccount.com --role "roles/pubsub.admin"
 
 # create a key that Terraform will use to authenticate as the service account against the Google Cloud Platform API
 gcloud iam service-accounts keys create ./secrets/terraform-gke-keyfile.json --iam-account=${SERVICE_ACCOUNT}@${PROJECT_NAME}.iam.gserviceaccount.com

@@ -27,6 +27,6 @@ echo "sleep for the kuard pods to be ready"
 sleep 10
 
 echo "kubectl port-forward 8080:8080"
-kubectl port-forward kuard 8080:8080
+kubectl port-forward kuard 8080:8080&
 
-#open http://localhost:8080/
+open http://localhost:8080/

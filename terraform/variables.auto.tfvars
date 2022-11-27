@@ -8,3 +8,5 @@ node_count          = 2
 cluster_name        = "gke-demo"
 # required for authenticating using the service account we create in `create-gcp-prereqs`
 gcp_auth_file       = "../secrets/terraform-gke-keyfile.json"
+
+topic_name          = "gke-topic"

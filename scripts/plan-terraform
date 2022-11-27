@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+
+TFVARS="./terraform/variables.auto.tfvars"
+
+CLUSTER_NAME=$(awk -F "= " '/cluster_name/ {print $2}' ${TFVARS} | sed 's/"//g')
+
+cd terraform
+
+terraform init
+
+terraform plan
+

@@ -34,3 +34,7 @@ variable "machine_type" {
 variable "gcp_auth_file" {
   description = "our creds file for the SA"
 }
+
+variable "topic_name" {
+  description = "pubsub / kafka topic"
+}
