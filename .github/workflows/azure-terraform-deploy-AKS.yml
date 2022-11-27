@@ -1,0 +1,113 @@
+name: 'azure-terraform-deploy-AKS'
+
+# specify our conditions to execute this workflow for now we just trigger via workflow_dispatch
+# I.e.: Execute this workflow on push (on the main branch) or for a P/R or whatever trigger fits the use case/requirement(s).
+#on:
+#  push:
+#    branches:
+#    - main
+#  pull_request:
+on: [workflow_dispatch]
+
+env:
+  TF_LOG: INFO
+  TF_VERSION: 1.2.6 ## Terraform version e.g: 1.1.0 Default=latest (Optional)
+  TF_ENVIRONMENT: develop ## this is a env var for the requisite terraform env and vars file
+  TF_KEY: develop-aks-cluster-tfstate ## AZ backend - Specifies name that will be given to terraform state file and plan artifact (Required)
+  KEY_VAULT_NAME: developAksKeyVault1234
+
+jobs:
+  terraform:
+    name: 'Terraform'
+    runs-on: ubuntu-latest
+    environment: develop    ## this sets the github project environment (develop, test, stage, production, etc.)
+
+    # Use the Bash shell regardless whether the GitHub Actions runner is ubuntu-latest, macos-latest, or windows-latest
+    # Set the working directory to main for the config files
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./02_AKS_Cluster/environments/develop/terraform
+
+    env:
+      # we should only have to change MY_ENV for each distinct environment
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      RESOURCE_GROUP: devtestdevops ## AZ backend - AZURE Resource Group hosting terraform backend storage acc (Required)
+      STORAGE_ACCOUNT: devtestdevops1234 ## AZ backend - AZURE terraform backend storage acc (Required)
+      CONTAINER_NAME: develop-aks-cluster-tfstate ## AZ backend - AZURE storage container hosting state files (Required)
+
+      AKS_CLUSTER_NAME: aks-developaksterraform
+      AKS_CLUSTER_RESOURCE_GROUP: rg-developaksterraform
+
+    steps:
+    # Checkout the repository to the GitHub Actions runner
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    # Install the preferred version of Terraform CLI
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TF_VERSION }} 
+        terraform_wrapper: true
+
+    # Initialize a new or existing Terraform working directory by creating initial files, loading any remote state, downloading modules, etc.
+    - name: Terraform Init
+      id: init
+      run: terraform init -backend-config="storage_account_name=$STORAGE_ACCOUNT" -backend-config="container_name=$CONTAINER_NAME" -backend-config="resource_group_name=$RESOURCE_GROUP" -backend-config="key=$TF_KEY"
+
+    # Run a terraform plan for pull requests only
+    - name: Terraform Plan
+      id: plan
+      #if: github.event_name == 'pull_request'
+      #run: terraform plan -var-file=./${{ env.TF_ENVIRONMENT }}.tfvars -no-color
+      run: terraform plan -var-file=./${{ env.TF_ENVIRONMENT }}.tfvars -no-color -var "ARM_CLIENT_ID=$ARM_CLIENT_ID" -var "ARM_CLIENT_SECRET=$ARM_CLIENT_SECRET" -var "ARM_TENANT_ID=$ARM_TENANT_ID" -var "ARM_SUBSCRIPTION_ID=$ARM_SUBSCRIPTION_ID"
+
+      # On push to main, build or change infrastructure according to Terraform configuration files
+    - name: Terraform Apply
+      id: apply
+      #if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      #run: terraform apply -var-file=./${{ env.TF_ENVIRONMENT }}.tfvars -auto-approve
+      run: terraform apply -auto-approve -var-file=./${{ env.TF_ENVIRONMENT }}.tfvars  -var "ARM_CLIENT_ID=$ARM_CLIENT_ID" -var "ARM_CLIENT_SECRET=$ARM_CLIENT_SECRET" -var "ARM_TENANT_ID=$ARM_TENANT_ID" -var "ARM_SUBSCRIPTION_ID=$ARM_SUBSCRIPTION_ID"
+
+      # continue with requisite infra configurations for AKS cluster
+    - uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - uses: azure/setup-kubectl@v3.0
+
+    - uses: azure/aks-set-context@v3
+      with:
+        cluster-name: ${{ env.AKS_CLUSTER_NAME }}
+        resource-group: ${{ env.AKS_CLUSTER_RESOURCE_GROUP }}
+
+    - name: Install ingress-nginx and bind ingress/certs to controller
+      env:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+        CLUSTER_RESOURCE_GROUP_NAME: ${{ secrets.CLUSTER_RESOURCE_GROUP_NAME }}
+        CLUSTER_NAME: ${{ secrets.CLUSTER_NAME }}
+      run: |
+        ./develop-install-ingress-nginx-controller
+      shell: bash
+      working-directory: ./02_AKS_Cluster/environments/develop/k8s/ingress-nginx
+
+    # [Optional] If you had to mod azure keyvault access policies instead of terraform here is where you could do it
+    #- name: Update the non-terraform managed azure keyvault access policy for the dynamic aks-specific  pod identity etc. 
+    #  env: 
+    #      KEY_VAULT_NAME: ${{ env.KEY_VAULT_NAME }}
+    #      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+    #  run: |
+    #    # configure access for the Service Principal
+    #    az keyvault set-policy --name "$KEY_VAULT_NAME" --spn "$ARM_CLIENT_ID" --secret-permissions list get set delete
+    #    az keyvault set-policy --name "$KEY_VAULT_NAME" --spn "$ARM_CLIENT_ID" --certificate-permissions list get set delete
+    #    az keyvault set-policy --name "$KEY_VAULT_NAME" --spn "$ARM_CLIENT_ID" --key-permissions list get set delete
+
+    #    # i.e.: configure for the pod identity application
+    #    # this example would grant the pod identity application access to a keyvault note this requires us to know the object-id of the application (for the pod-id)
+    #    az keyvault set-policy --name "$KEY_VAULT_NAME" --key-permissions get list recover --secret-permissions get list recover --certificate-permissions get list --object-id $MY_POD_ID_APPLICATION_ID_GOES_HERE
+

@@ -1,0 +1,225 @@
+name: 'build-deploy-service'
+# a develop env specific environment workflow
+# builds app and docker image and deploys to develop envs cluster
+
+# specify our conditions to execute this workflow for now we just trigger via workflow_dispatch
+# I.e.: Execute this workflow on push (on the main branch) or for a P/R or whatever trigger fits the use case/requirement(s).
+on: 
+  workflow_dispatch:
+#  pull_request:
+#    branches: [develop]
+#    paths:
+#      - "myapp/**"
+#      - "k8s/myapp**"
+#  push:
+#    branches: [develop]
+#    paths:
+#      - "myapp/**"
+#      - "k8s/myapp**"
+
+env:
+  ##### Global #####
+  ENVIRONMENT: develop-github-actions # develop ## this is a env var for the requisite Github repo environment
+  AKS_CLUSTER_NAME: aks-developaksterraform
+  AKS_CLUSTER_RESOURCE_GROUP: rg-developaksterraform
+  ACR_RESOURCE_GROUP: ACR_RG
+  ARM_TENANT_ID: ARM_TENANT_ID
+
+  ##### myapp #####
+  MYAPP_DEV_BACKEND_BRANCH: develop-github-actions
+  MYAPP_BUILD_VERSION: myappv999
+  MYAPP_IMAGE_PULL_SECRET_NAME: myapp-image-pull
+  MYAPP_IMAGE: azureacrname.azurecr.io/myapp
+  MYAPP_CONTAINER_NAME: myapp
+  MYAPP_DEPLOYMENT_MANIFEST_PATH: ./k8s/myapp/manifests/develop-github-actions
+  MYAPP_AZURE_CONTAINER_REGISTRY: azureacrname
+  MYAPP_AZURE_CONTAINER_REGISTRY_RESOURCE_GROUP: ACR_RG # ugh this is terrible and needs to be changed
+  MYAPP_PORT: 13000
+  MYAPP_REPLICAS: 2
+  MYAPP_AZURE_KEYVAULT_NAME: developAksKeyVault
+  MYAPP_RESOURCES_REQUESTS_CPU: 100m
+  MYAPP_RESOURCES_REQUESTS_MEMORY: 100Mi
+  MYAPP_RESOURCES_LIMITS_CPU: 250m
+  MYAPP_RESOURCES_LIMITS_MEMORY: 250Mi
+  MYAPP_READINESS_INITIAL_DELAY: 5
+  MYAPP_READINESS_PERIOD_SECONDS: 10
+  MYAPP_LIVENESS_INITIAL_DELAY: 15
+  MYAPP_LIVENESS_PERIOD_SECONDS: 20
+  MYAPP_INGRESS_SPEC_HOST: myapp-myapp.myco.com
+  # !NOTE: Existing Certificate must exist in Azure Keyvault required for the secretproviderclass
+  MYAPP_TLS_CERT_KEYVAULT_SECRET_NAME: myco-com-chain
+
+  # Secrets
+  AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+  MYORG_CICD_SECRET: ${{ secrets.MYORG_CICD_SECRET }}
+
+jobs:
+  build-image:
+    permissions:
+      contents: read
+      id-token: write
+    environment: develop-github-actions ## hack for now this sets the github project environment
+    runs-on: ubuntu-latest
+    steps:
+
+    # Checks out the repository this file is in
+    - uses: actions/checkout@v3
+      with:
+        repository: mygithuborg/mygitrepo
+        token: ${{ secrets.MYORG_CICD_SECRET }}
+        ref: refs/heads/${{ env.MYAPP_DEV_BACKEND_BRANCH }}
+        submodules: recursive
+        persist-credentials: true
+
+    # Logs in with your Azure credentials
+    - name: Azure login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+    # Builds and pushes an image up to your Azure Container Registry
+    # if building a node app you need to configure the runner for node
+    - name: Build and push image to ACR
+      run: |
+        az acr build --image ${{ env.MYAPP_AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ env.MYAPP_CONTAINER_NAME }}:${{ github.sha }} --registry ${{ env.MYAPP_AZURE_CONTAINER_REGISTRY }} -g ${{ env.ACR_RESOURCE_GROUP }} .
+        az acr import --name ${{ env.MYAPP_AZURE_CONTAINER_REGISTRY }} --source ${{ env.MYAPP_AZURE_CONTAINER_REGISTRY }}.azurecr.io/${{ env.MYAPP_CONTAINER_NAME }}:${{ github.sha }} --image ${{ env.MYAPP_CONTAINER_NAME }}:${{ env.MYAPP_BUILD_VERSION }} --force
+      working-directory: ./myapp
+
+  create-secret:
+    permissions:
+      contents: read
+      id-token: write
+    environment: develop-github-actions ## hack for now this sets the github project environment
+    runs-on: ubuntu-latest
+    steps:
+    # Logs in with your Azure credentials
+    - name: Azure login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+    # Retrieves your Azure Kubernetes Service clusters kubeconfig file
+    - name: Get K8s context
+      uses: azure/aks-set-context@v3.0
+      with:
+        resource-group: ${{ env.AKS_CLUSTER_RESOURCE_GROUP }}
+        cluster-name: ${{ env.AKS_CLUSTER_NAME }}
+
+    # Retrieves the credentials for pulling images from your Azure Container Registry
+    # may not be required depends on your SPs creds...
+    - name: Get ACR credentials
+      run: |
+        az acr update -n ${{ env.MYAPP_AZURE_CONTAINER_REGISTRY }} -g ${{ env.MYAPP_AZURE_CONTAINER_REGISTRY_RESOURCE_GROUP }} --admin-enabled true
+        ACR_USERNAME=$(az acr credential show -g ${{ env.MYAPP_AZURE_CONTAINER_REGISTRY_RESOURCE_GROUP }} -n ${{ env.MYAPP_AZURE_CONTAINER_REGISTRY }} --query username -o tsv)
+        ACR_PASSWORD=$(az acr credential show -g ${{ env.MYAPP_AZURE_CONTAINER_REGISTRY_RESOURCE_GROUP }} -n ${{ env.MYAPP_AZURE_CONTAINER_REGISTRY }} --query passwords[0].value -o tsv)
+        echo "::add-mask::${ACR_USERNAME}"
+        echo "::set-output name=username::${ACR_USERNAME}"
+        echo "::add-mask::${ACR_PASSWORD}"
+        echo "::set-output name=password::${ACR_PASSWORD}"
+      id: get-acr-creds
+
+    # Creates a kubernetes secret on your Azure Kubernetes Service cluster that matches up to the credentials from the last step
+    # may not be required depends on your SPs creds...
+    - name: Create K8s secret for pulling image from ACR
+      uses: Azure/k8s-create-secret@v4
+      with:
+        namespace: 'myapp'
+        container-registry-url: ${{ env.MYAPP_AZURE_CONTAINER_REGISTRY }}.azurecr.io
+        container-registry-username: ${{ steps.get-acr-creds.outputs.username }}
+        container-registry-password: ${{ steps.get-acr-creds.outputs.password }}
+        secret-name: ${{ env.MYAPP_IMAGE_PULL_SECRET_NAME }}  
+
+  deploy-image:
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    environment: develop-github-actions ## hack for now this sets the github project environment
+    runs-on: ubuntu-latest
+    needs: [build-image, create-secret]
+    steps:
+    # Checks out the repository this file is in
+    - uses: actions/checkout@v3
+      with:
+        repository: mygithuborg/mygitrepo
+        token: ${{ secrets.MYORG_CICD_SECRET }}
+        ref: refs/heads/${{ env.MYAPP_DEV_BACKEND_BRANCH }}
+        submodules: recursive
+    
+    # Logs in with your Azure credentials
+    - name: Azure login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    # Configures your AKS cluster
+    - name: Set AKS cluster context
+      uses: azure/aks-set-context@v2.0
+      with:
+        resource-group: ${{ env.AKS_CLUSTER_RESOURCE_GROUP }}
+        cluster-name: ${{ env.AKS_CLUSTER_NAME }}
+
+    # this works well for simpler apps/services and teams to increase engagement since most teams know sed
+    - name: create manifests from template
+      shell: bash
+      run: |
+        rm -fr "./k8s/myapp/manifests/${{ env.ENVIRONMENT }}"
+        mkdir -p "./k8s/myapp/manifests/${{ env.ENVIRONMENT }}"
+
+        # 00 NAMESPACE (just copy over)
+        cp ./k8s/myapp/templates/00-namespace-template.yaml "./k8s/myapp/manifests/${{ env.ENVIRONMENT }}/00-namespace.yaml"
+
+        # 01 SECRET PROVIDER CLASS 
+        sed -e "s#__ARM_TENANT_ID__#${ARM_TENANT_ID}#g" \
+        -e "s#__MYAPP_AZURE_KEYVAULT_NAME__#${MYAPP_AZURE_KEYVAULT_NAME}#g" \
+        -e "s#__MYAPP_TLS_CERT_KEYVAULT_SECRET_NAME__#${MYAPP_TLS_CERT_KEYVAULT_SECRET_NAME}#g" ./k8s/myapp/templates/01-secretproviderclass-template.yaml > "./k8s/myapp/manifests/${{ env.ENVIRONMENT }}/01-secretproviderclass.yaml"
+
+        # 02 CONFIGMAP
+        sed -e "s#__MYAPP_BUILD_VERSION__#${MYAPP_BUILD_VERSION}#g" \
+        -e "s#__MYAPP_PORT__#${MYAPP_PORT}#g" ./k8s/myapp/templates/02-configmap-template.yaml > "./k8s/myapp/manifests/${{ env.ENVIRONMENT }}/02-configmap.yaml"
+
+        # 03 SERVICE
+        sed -e "s#__MYAPP_PORT__#${MYAPP_PORT}#g" ./k8s/myapp/templates/03-service-template.yaml > "./k8s/myapp/manifests/${{ env.ENVIRONMENT }}/03-service.yaml"
+
+        # 04 DEPLOYMENT
+        sed -e "s#__MYAPP_BUILD_VERSION__#${MYAPP_BUILD_VERSION}#g" \
+        -e "s#__MYAPP_REPLICAS__#${MYAPP_REPLICAS}#g" \
+        -e "s#__MYAPP_IMAGE__#${MYAPP_IMAGE}#g" \
+        -e "s#__MYAPP_PORT__#${MYAPP_PORT}#g" \
+        -e "s#__MYAPP_RESOURCES_REQUESTS_CPU__#${MYAPP_RESOURCES_REQUESTS_CPU}#g" \
+        -e "s#__MYAPP_RESOURCES_REQUESTS_MEMORY__#${MYAPP_RESOURCES_REQUESTS_MEMORY}#g" \
+        -e "s#__MYAPP_RESOURCES_LIMITS_CPU__#${MYAPP_RESOURCES_LIMITS_CPU}#g" \
+        -e "s#__MYAPP_RESOURCES_LIMITS_MEMORY__#${MYAPP_RESOURCES_LIMITS_MEMORY}#g" \
+        -e "s#__MYAPP_READINESS_INITIAL_DELAY__#${MYAPP_READINESS_INITIAL_DELAY}#g" \
+        -e "s#__MYAPP_READINESS_PERIOD_SECONDS__#${MYAPP_READINESS_PERIOD_SECONDS}#g" \
+        -e "s#__MYAPP_LIVENESS_INITIAL_DELAY__#${MYAPP_LIVENESS_INITIAL_DELAY}#g" \
+        -e "s#__MYAPP_LIVENESS_PERIOD_SECONDS__#${MYAPP_LIVENESS_PERIOD_SECONDS}#g" ./k8s/myapp/templates/04-deployment-template.yaml > "./k8s/myapp/manifests/${{ env.ENVIRONMENT }}/04-deployment.yaml"
+
+        # 05 INGRESS
+        sed -e "s#__MYAPP_INGRESS_SPEC_HOST__#${MYAPP_INGRESS_SPEC_HOST}#g" \
+        -e "s#__MYAPP_PORT__#${MYAPP_PORT}#g" ./k8s/myapp/templates/05-ingress-template.yaml > "./k8s/myapp/manifests/${{ env.ENVIRONMENT }}/05-ingress.yaml"
+      id: create-manifests-from-templates
+
+    - uses: stefanzweifel/git-auto-commit-action@v4
+      with:
+        commit_message: Github Actions AKS manifests updates created from templates
+        branch: ${{ env.MYAPP_DEV_BACKEND_BRANCH }}
+        file_pattern: './k8s/myapp/manifests/'
+        skip_dirty_check: false    
+        create_branch: false
+
+    - name: Deploy all manifests
+      uses: Azure/k8s-deploy@v4
+      with:
+        namespace: myapp
+        manifests: ${{ env.MYAPP_DEPLOYMENT_MANIFEST_PATH }}
+    # if needed could also go kubectl
+    #- name: Deploy manifests to the cluster using simple kubectl
+    #  shell: bash
+    #  run: |
+    #    for i in `seq 1 10`; do \
+    #    kubectl -n myapp apply --recursive -f ../ && break || \
+    #    sleep 10; \
+    #    done; \
+    #    #kubectl -n myapp apply -f \*.yaml 
+    #  working-directory: ${{ env.MYAPP_DEPLOYMENT_MANIFEST_PATH }}
