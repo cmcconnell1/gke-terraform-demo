@@ -4,11 +4,11 @@ TFVARS="./terraform/variables.auto.tfvars"
 
 CLUSTER_NAME=$(awk -F "= " '/cluster_name/ {print $2}' ${TFVARS} | sed 's/"//g')
 
-# cd terraform
+cd terraform
 
-# terraform plan
+terraform plan
 
-# terraform apply -auto-approve
+terraform apply -auto-approve
 
 sleep 5
 

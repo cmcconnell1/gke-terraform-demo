@@ -3,6 +3,10 @@ variable "project_id" {
   description = "project id"
 }
 
+variable "service_account" {
+  description = "name of the SA"
+}
+
 variable "bucket_name" {
   description = "the name of the GCP bucket to create to hold remote tf state"
 }

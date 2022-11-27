@@ -12,4 +12,5 @@
   - I.e.: see the example Github Actions workflow file here:
     - `./.github/workflows/workflow.yaml`
 
-
+- This module within this project is for simple demo purposes only. For H/A deployments, consider basing your terraform/IAC on the community supported instead: 
+  - [Terraform Kubernetes Engine Module](https://github.com/terraform-google-modules/terraform-google-kubernetes-engine)
