@@ -1,0 +1,64 @@
+name: 'Terraform CI'
+
+# NOTES::
+#   GCP_CREDENTIALS is a Github (Environment) Secret with the requisite creds from our service account
+#   we can use it securely from workflows using the following
+#      env:
+#        GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+
+# Go to your project on google cloud and create a service account
+# Add the following secrets to your GitHub project repo setting: GCP_PROJECT and GCP_CREDENTIALS
+
+# Execute this workflow on push (on the main branch) or for a P/R
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+
+jobs:
+  terraform:
+    name: 'Terraform'
+    runs-on: ubuntu-latest
+
+    # Use the Bash shell for all runners
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+    # checks-out your repository under $GITHUB_WORKSPACE, so your workflow can access it.
+    # https://github.com/actions/checkout
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    # Install and configure the latest version of Terraform CLI and configure the Terraform CLI configuration file with a Terraform Cloud user API token
+    # https://github.com/hashicorp/setup-terraform
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+
+    # Initialize the Terraform working directory 
+    - name: Terraform Init
+      run: terraform init
+      env:
+        GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+
+    # Check Terraform configuration files 
+    - name: Terraform Format
+      run: terraform fmt -check
+
+    # Generates an execution plan for Terraform
+    - name: Terraform Plan
+      run: terraform plan
+      env:
+        GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+
+      # Execute terraform apply on push to main
+      # Note: It is recommended to set up a required "strict" status check in your repository for "Terraform Cloud". 
+      # See the documentation on "strict" required status checks 
+      # for more information: https://help.github.com/en/github/administering-a-repository/types-of-required-status-checks
+    - name: Terraform Apply
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      run: terraform apply -auto-approve
+      env:
+        GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}

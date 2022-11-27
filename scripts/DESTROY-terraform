@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+cd terraform
+
+terraform destroy -auto-approve
+
+# we destroy twice due to a bug in the gcp? or? wherein it sometimes cant find resources specifically has issues with gke and its nodepools
+terraform destroy -auto-approve
+
